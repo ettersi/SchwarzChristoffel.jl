@@ -40,6 +40,64 @@ function assemble_quadcache(β)
     )
 end
 
+function adaptive_semijacobi_integral(f,x,β,Δx,tol,(qjac,qleg))
+    Δx == 0 && return zero(ComplexF64)
+
+    t = zero(Q0f63)
+    I = zero(ComplexF64)
+
+    Δt,ΔI = shrink_integral(
+        Δt -> begin
+            Iq = ntuple(i->
+                semijacobi_integral(
+                    f, x,β,Δx*-float(Δt),
+                    qjac[i]
+                ),
+                Val(2)
+            )
+            return Iq[2],abs(Iq[1]-Iq[2])
+        end,
+        Q0f63(-1), tol
+    )
+    t += Δt; I += ΔI
+    while t > -1
+        Δt,ΔI = shrink_integral(
+            Δt -> begin
+                Iq = ntuple(i->
+                    legendre_integral(
+                        xv->f(xv)*complex(xv-x)^-β,
+                        x+Δx*-float(t), Δx*-float(Δt),
+                        qleg[i]
+                    ),
+                    Val(2)
+                )
+                return Iq[2],abs(Iq[1]-Iq[2])
+            end,
+            max(-1-t, Δt+Δt), tol
+        )
+        t += Δt; I += ΔI
+    end
+    return I::ComplexF64
+end
+
+legendre_integral(f,x,Δx, (xq,wq)) =
+    Δx/2 * mapreduce(
+        ((xqk,wqk),) -> f(x+Δx*(xqk+1)/2)*wqk,
+        +, zip(xq,wq)
+    )
+semijacobi_integral(f,x,β,Δx, (xq,wq)) =
+    complex(Δx/2)^(-β) * legendre_integral(f,x,Δx, (xq,wq))
+
+function shrink_integral(IEfun,Δt, tol)
+    I,E = IEfun(Δt)
+    while E > sqrt(tol)*abs(I)
+        Δt *= Q0f63(0.5)
+        Δt == 0 && error("Could not converge Schwarz-Christoffel integral to desired accuracy")
+        I,E = IEfun(Δt)
+    end
+    return Δt,I
+end
+
 
 #############################
 # SchwarzChristoffelDerivate
@@ -76,10 +134,6 @@ function segment(f::SchwarzChristoffelDerivate,k)
     @unpack x = f
     @assert(k in 0:length(x))
 
-    if k == 0
-
-    end
-
     xm = (x[k]+x[k+1])/2
     return integral(f,k,xm) - integral(f,k+1,xm)
 end
@@ -91,67 +145,13 @@ Integral of `f` from `x[k]` to `xv`.
 """
 function integral(f::SchwarzChristoffelDerivate,k,xv)
     @unpack x,β,tol,quadcache = f
-    qjac = quadcache.jacobi_quadrules
-    qleg = quadcache.legendre_quadrule
     @assert k in 1:length(x)
+    qjac = quadcache.jacobi_quadrules[k]
+    qleg = quadcache.legendre_quadrule
 
-    Δx = xv - x[k]
-    Δx == 0 && return zero(ComplexF64)
-
-    t = zero(Q0f63)
-    I = zero(ComplexF64)
-
-    Δt,ΔI = shrink_integral(
-        Δt -> begin
-            Iq = ntuple(i->
-                semijacobi_integral(
-                    x->f(x,skip=(k,)),
-                    x[k],β[k],Δx*-float(Δt),
-                    qjac[k][i]
-                ),
-                Val(2)
-            )
-            return Iq[2],abs(Iq[1]-Iq[2])
-        end,
-        Q0f63(-1), tol
-    )
-    t += Δt; I += ΔI
-    while t > -1
-        Δt,ΔI = shrink_integral(
-            Δt -> begin
-                Iq = ntuple(i->
-                    legendre_integral(
-                        f, x[k]+Δx*-float(t), Δx*-float(Δt),
-                        qleg[i]
-                    ),
-                    Val(2)
-                )
-                return Iq[2],abs(Iq[1]-Iq[2])
-            end,
-            max(-1-t, Δt+Δt), tol
-        )
-        t += Δt; I += ΔI
-    end
-    return I::ComplexF64
+    return adaptive_semijacobi_integral(xx->f(xx,skip=(k,)),x[k],β[k],xv-x[k],tol,(qjac,qleg))
 end
 
-legendre_integral(f,x,Δx, (xq,wq)) =
-    Δx/2 * mapreduce(
-        ((xqk,wqk),) -> f(x+Δx*(xqk+1)/2)*wqk,
-        +, zip(xq,wq)
-    )
-semijacobi_integral(f,x,β,Δx, (xq,wq)) =
-    complex(Δx/2)^(-β) * legendre_integral(f,x,Δx, (xq,wq))
-
-function shrink_integral(IEfun,Δt, tol)
-    I,E = IEfun(Δt)
-    while E > sqrt(tol)*abs(I)
-        Δt *= Q0f63(0.5)
-        Δt == 0 && error("Could not converge Schwarz-Christoffel integral to desired accuracy")
-        I,E = IEfun(Δt)
-    end
-    return Δt,I
-end
 
 
 ########################
@@ -174,7 +174,7 @@ end
 
 SchwarzChristoffelMap(x,β; kwargs...) = SchwarzChristoffelMap(SchwarzChristoffelDerivate(x,β; kwargs...))
 
-segment(F:SchwarzChristoffelMap,args...) = segment(F.f,args...)
+segment(F::SchwarzChristoffelMap,args...) = segment(F.f,args...)
 
 (F::SchwarzChristoffelMap)(xv::Real) = F(complex(xv))
 function (F::SchwarzChristoffelMap)(xv::Complex)
@@ -195,4 +195,6 @@ function (F::SchwarzChristoffelMap)(xv::Complex)
         )
     end
     return z[k] + integral(f,k,xv)
+end
+
 end

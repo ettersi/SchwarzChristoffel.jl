@@ -21,5 +21,5 @@ using StaticArrays
 
     f = SchwarzChristoffelDerivate(SVector(-1e-8,0),SVector(0.5,0)); @test integral(f,2,1) ≈ (sqrt(1e8+1)-1)/5000
 
-    f = SchwarzChristoffelDerivate(SVector(0,1),SVector(0)); @test segment(f,1) ≈ 1
+    f = SchwarzChristoffelDerivate(SVector(0,1),SVector(0,0)); @test segment(f,1) ≈ 1
 end
