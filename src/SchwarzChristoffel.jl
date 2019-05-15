@@ -12,6 +12,7 @@ const NQUAD = 4
 
 include("fargextremum.jl")
 
+
 ######################
 # Low-level functions
 
@@ -32,11 +33,15 @@ function schwarzchristoffelderivative(x,β,xv; skip=())
 end
 
 function assemble_quadcache(β)
-    qjac = map(βi->(gaussjacobi(NQUAD,0,-βi), gaussjacobi(2NQUAD,0,-βi)), β)
-    qleg = (gausslegendre(NQUAD),gausslegendre(2NQUAD))
+    qjac = map(βi->(SVector{NQUAD}.(gaussjacobi(NQUAD,0,-βi)), SVector{2NQUAD}.(gaussjacobi(2NQUAD,0,-βi))), β)
+    qleg = (SVector{NQUAD}.(gausslegendre(NQUAD)), SVector{2NQUAD}.(gausslegendre(2NQUAD)))
+    qinf = sum(β) > 1 ?
+        (SVector{NQUAD}.(gaussjacobi(NQUAD,0,sum(β)-2)), SVector{2NQUAD}.(gaussjacobi(2NQUAD,0,sum(β)-2))) :
+        nothing
     return (
         jacobi_quadrules=qjac,
-        legendre_quadrule=qleg
+        legendre_quadrule=qleg,
+        inf_quadrule=qinf
     )
 end
 
@@ -98,6 +103,20 @@ function shrink_integral(IEfun,Δt, tol)
     return Δt,I
 end
 
+struct InfSegmentMap
+    x0::Float64
+    b::Float64
+end
+
+function InfSegmentMap(xv,x1,x2)
+    s = xv < x1 ? -1 : 1
+    InfSegmentMap(xv,s*sqrt(xv*(xv-x1-x2) + x1*x2))
+end
+
+(csm::InfSegmentMap)(y) = csm.b/y-csm.b+csm.x0
+grad(csm::InfSegmentMap,y) = -csm.b/y^2
+finv(csm::InfSegmentMap,x) = csm.b/(x - csm.x0 + csm.b)
+
 
 #############################
 # SchwarzChristoffelDerivate
@@ -116,6 +135,8 @@ function SchwarzChristoffelDerivate(x,β; tol = eps())
     SchwarzChristoffelDerivate(x,β,tol,assemble_quadcache(β))
 end
 
+hasfiniteintegral(f::SchwarzChristoffelDerivate) = sum(f.β) > 1
+
 """
     (f::SchwarzChristoffelDerivate)(xv; skip = ())
 
@@ -132,9 +153,16 @@ Integral of `f` from `x[k]` to `x[k+1]`.
 """
 function segment(f::SchwarzChristoffelDerivate,k)
     @unpack x = f
-    @assert(k in 0:length(x))
 
-    xm = (x[k]+x[k+1])/2
+    if k in 1:length(x)-1
+        xm = (x[k]+x[k+1])/2
+    elseif k == 0
+        xm = InfSegmentMap(x[1],x[2],x[end])(0.5)
+    elseif k == length(x)
+        xm = InfSegmentMap(x[end],x[1],x[end-1])(0.5)
+    else
+        throw(ArgumentError("attempt to compute segment $k of $(length(x)+1)-segment SchwarzChristoffelDerivate"))
+    end
     return integral(f,k,xm) - integral(f,k+1,xm)
 end
 
@@ -145,31 +173,43 @@ Integral of `f` from `x[k]` to `xv`.
 """
 function integral(f::SchwarzChristoffelDerivate,k,xv)
     @unpack x,β,tol,quadcache = f
-    @assert k in 1:length(x)
-    qjac = quadcache.jacobi_quadrules[k]
+    @assert k in 0:length(x)+1
     qleg = quadcache.legendre_quadrule
 
-    return adaptive_semijacobi_integral(xx->f(xx,skip=(k,)),x[k],β[k],xv-x[k],tol,(qjac,qleg))
+    if k in 1:length(x)
+        qjac = quadcache.jacobi_quadrules[k]
+        return adaptive_semijacobi_integral(xx->f(xx,skip=(k,)),x[k],β[k],xv-x[k],tol,(qjac,qleg))
+    else
+        @assert isreal(xv)
+        qinf = quadcache.inf_quadrule
+        m = InfSegmentMap(xv,x[1],x[end])
+        return adaptive_semijacobi_integral(
+            y->f(m(y))*grad(m,y),
+            0, 2-sum(β), 1,
+            tol,(qinf,qleg)
+        )
+    end
 end
-
 
 
 ########################
 # SchwarzChristoffelMap
 
-struct SchwarzChristoffelMap{F<:SchwarzChristoffelDerivate,Z}
+struct SchwarzChristoffelMap{F<:SchwarzChristoffelDerivate,Z,Zinf}
     f::F
     z::Z
+    zinf::Zinf
 end
 
 function SchwarzChristoffelMap(f::SchwarzChristoffelDerivate)
-    x = f.x
-    z = similar(x,ComplexF64)
+    @unpack x = f
+    z = similar(x,ComplexF64,)
     z[end] = 0
     for k = length(x)-1:-1:1
         z[k] = z[k+1] - segment(f,k)
     end
-    return SchwarzChristoffelMap(f,z)
+    zinf = hasfiniteintegral(f) ? segment(f,length(x)) : Inf
+    return SchwarzChristoffelMap(f,z,zinf)
 end
 
 SchwarzChristoffelMap(x,β; kwargs...) = SchwarzChristoffelMap(SchwarzChristoffelDerivate(x,β; kwargs...))
@@ -179,8 +219,11 @@ segment(F::SchwarzChristoffelMap,args...) = segment(F.f,args...)
 (F::SchwarzChristoffelMap)(xv::Real) = F(complex(xv))
 function (F::SchwarzChristoffelMap)(xv::Complex)
     # signbit(imag(xv)) && conj(F(conj(xv)))
-    @unpack f,z = F
+    @unpack f,z,zinf = F
     @unpack x = f
+
+    abs(xv) == Inf && return zinf
+
     k = fargmax(1:length(x)) do k
         xv == x[k] && return Inf
 
