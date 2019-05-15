@@ -7,6 +7,8 @@ using FixedPointNumbers
 using FastGaussQuadrature
 using Parameters: @unpack
 using Bernstein
+using DifferentialEquations
+using Roots
 
 const NQUAD = 4
 
@@ -136,6 +138,7 @@ function SchwarzChristoffelDerivate(x,β; tol = eps())
 end
 
 hasfiniteintegral(f::SchwarzChristoffelDerivate) = sum(f.β) > 1
+nsegments(f::SchwarzChristoffelDerivate) = length(f.x)+1
 
 """
     (f::SchwarzChristoffelDerivate)(xv; skip = ())
@@ -215,6 +218,8 @@ end
 SchwarzChristoffelMap(x,β; kwargs...) = SchwarzChristoffelMap(SchwarzChristoffelDerivate(x,β; kwargs...))
 
 segment(F::SchwarzChristoffelMap,args...) = segment(F.f,args...)
+nsegments(f::SchwarzChristoffelMap) = nsegments(F.f)
+grad(F::SchwarzChristoffelMap,x) = F.f(x)
 
 (F::SchwarzChristoffelMap)(xv::Real) = F(complex(xv))
 function (F::SchwarzChristoffelMap)(xv::Complex)
@@ -238,6 +243,72 @@ function (F::SchwarzChristoffelMap)(xv::Complex)
         )
     end
     return z[k] + integral(f,k,xv)
+end
+
+
+###############################
+# InverseSchwarzChristoffelMap
+
+struct InverseSchwarzChristoffelMap{SCM,X,D,Z}
+    F::SCM
+    x::X
+    d::D
+    z::Z
+end
+
+finv(F::SchwarzChristoffelMap, x = default_starting_points(F)) =
+    InverseSchwarzChristoffelMap(F,x,conj.(sign.(F.f.(x))),F.(x))
+
+const NSAMPLES = 3
+
+function default_starting_points(F::SchwarzChristoffelMap)
+    @unpack x = F.f
+    n = length(x)
+    midpoints = LinRange(0,1, 2NSAMPLES+1)[2:2:end]
+    xs = Vector{Float64}(undef, NSAMPLES*(n+1))
+    for k = 1:n-1
+        xs[NSAMPLES*(k-1) .+ (1:NSAMPLES)] .= x[k] .+ (x[k+1]-x[k]).*midpoints
+    end
+    xs[NSAMPLES*(n-1) .+ (1:NSAMPLES)] .= InfSegmentMap(x[1],x[2],x[end]).(midpoints)
+    xs[NSAMPLES*n .+ (1:NSAMPLES)] .= InfSegmentMap(x[end],x[1],x[end-1]).(midpoints)
+    return xs
+end
+
+function find_starting_point(x,d,z,ze)
+    @assert length(x) == length(d) == length(z)
+    k = fargmin(1:length(x)) do k
+        imag(d[k]*(ze-z[k])) < 0 && return Inf
+        return abs(ze - z[k])
+    end
+    return x[k],z[k]
+end
+
+function (iF::InverseSchwarzChristoffelMap)(ze)
+    @unpack F,x,d,z = iF
+    xs,zs = find_starting_point(x,d,z,ze)
+    x̃e = finv_ode(F,xs,zs,ze)
+    return finv_newton(F,x̃e,ze)
+end
+
+function finv_ode(F::SchwarzChristoffelMap,xs,zs,ze)
+    @unpack f = F
+    prob = ODEProblem(
+        (x,_,z)->(ze-zs)/f(x),
+        ComplexF64(xs), (0.0,1.0)
+    )
+    sol = solve(prob, reltol=1e-2, save_everystep=false)
+    return sol(1)
+end
+
+function finv_newton(F::SchwarzChristoffelMap,xs,ze)
+    @unpack f = F
+    fd = (x->F(x) - ze), f
+    return find_zero(
+        fd,
+        complex(xs),
+        Roots.Newton(),
+        rtol=1e-3
+    )
 end
 
 end

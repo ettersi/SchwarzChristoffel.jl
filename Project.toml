@@ -5,9 +5,11 @@ version = "0.1.0"
 
 [deps]
 Bernstein = "55e0a05c-753f-11e9-14bb-b7f14aae7d87"
+DifferentialEquations = "0c46a032-eb83-5123-abaf-570d42b7fbaa"
 FastGaussQuadrature = "442a2c76-b920-505d-bb47-c5924d526838"
 FixedPointNumbers = "53c48c17-4a7d-5ca2-90c5-79b7896eea93"
 Parameters = "d96e819e-fc66-5662-9728-84c9c7592b0a"
+Roots = "f2b01f46-fcfa-551c-844a-d8ac1e96c665"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 
 [extras]
