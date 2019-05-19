@@ -1,14 +1,14 @@
 module SchwarzChristoffel
 
-export SchwarzChristoffelDerivate, SchwarzChristoffelMap, segment, integral
+export SchwarzChristoffelDerivate, SchwarzChristoffelMap, segment, integral, finv
 
-using StaticArrays
-using FixedPointNumbers
-using FastGaussQuadrature
-using Parameters: @unpack
 using Bernstein
 using DifferentialEquations
+using FastGaussQuadrature
+using FixedPointNumbers
+using Parameters: @unpack
 using Roots
+using StaticArrays
 
 const NQUAD = 4
 
@@ -296,7 +296,7 @@ function finv_ode(F::SchwarzChristoffelMap,xs,zs,ze)
         (x,_,z)->(ze-zs)/f(x),
         ComplexF64(xs), (0.0,1.0)
     )
-    sol = solve(prob, reltol=1e-2, save_everystep=false)
+    sol = solve(prob, reltol=1e-3, save_everystep=false)
     return sol(1)
 end
 
@@ -307,7 +307,7 @@ function finv_newton(F::SchwarzChristoffelMap,xs,ze)
         fd,
         complex(xs),
         Roots.Newton(),
-        rtol=1e-3
+        rtol=f.tol
     )
 end
 
