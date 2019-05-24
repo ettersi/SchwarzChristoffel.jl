@@ -123,18 +123,19 @@ finv(csm::InfSegmentMap,x) = csm.b/(x - csm.x0 + csm.b)
 #############################
 # SchwarzChristoffelDerivate
 
-struct SchwarzChristoffelDerivate{X,B,QC}
+struct SchwarzChristoffelDerivate{X,B,W,QC}
     x::X
     β::B
+    w::W
     tol::Float64
     quadcache::QC
 end
 
-function SchwarzChristoffelDerivate(x,β; tol = eps())
+function SchwarzChristoffelDerivate(x,β, w = one; tol = eps())
     idx = sortperm(x)
     x = x[idx]
     β = β[idx]
-    SchwarzChristoffelDerivate(x,β,tol,assemble_quadcache(β))
+    SchwarzChristoffelDerivate(x,β,w,tol,assemble_quadcache(β))
 end
 
 hasfiniteintegral(f::SchwarzChristoffelDerivate) = sum(f.β) > 1
@@ -147,7 +148,7 @@ Evluate the function `prod((xv.-x).^.-β)`.
 
 Indices listed in skip are omitted from the product.
 """
-(f::SchwarzChristoffelDerivate)(xv; skip=()) = schwarzchristoffelderivative(f.x,f.β,xv; skip=skip)
+(f::SchwarzChristoffelDerivate)(xv; skip=()) = f.w(xv)*schwarzchristoffelderivative(f.x,f.β,xv; skip=skip)
 
 """
     segment(f::SchwarzChristoffelDerivate, k)
@@ -215,7 +216,7 @@ function SchwarzChristoffelMap(f::SchwarzChristoffelDerivate)
     return SchwarzChristoffelMap(f,z,zinf)
 end
 
-SchwarzChristoffelMap(x,β; kwargs...) = SchwarzChristoffelMap(SchwarzChristoffelDerivate(x,β; kwargs...))
+SchwarzChristoffelMap(args...; kwargs...) = SchwarzChristoffelMap(SchwarzChristoffelDerivate(args...; kwargs...))
 
 segment(F::SchwarzChristoffelMap,args...) = segment(F.f,args...)
 nsegments(f::SchwarzChristoffelMap) = nsegments(F.f)
