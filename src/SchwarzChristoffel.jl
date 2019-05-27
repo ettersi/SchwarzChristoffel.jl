@@ -116,26 +116,25 @@ function InfSegmentMap(xv,x1,x2)
 end
 
 (csm::InfSegmentMap)(y) = csm.b/y-csm.b+csm.x0
-grad(csm::InfSegmentMap,y) = -csm.b/y^2
-finv(csm::InfSegmentMap,x) = csm.b/(x - csm.x0 + csm.b)
+grad(csm::InfSegmentMap) = y->-csm.b/y^2
+finv(csm::InfSegmentMap) = x->csm.b/(x - csm.x0 + csm.b)
 
 
 #############################
 # SchwarzChristoffelDerivate
 
-struct SchwarzChristoffelDerivate{X,B,W,QC}
+struct SchwarzChristoffelDerivate{X,B,QC}
     x::X
     β::B
-    w::W
     tol::Float64
     quadcache::QC
 end
 
-function SchwarzChristoffelDerivate(x,β, w = one; tol = eps())
+function SchwarzChristoffelDerivate(x,β; tol = eps())
     idx = sortperm(x)
     x = x[idx]
     β = β[idx]
-    SchwarzChristoffelDerivate(x,β,w,tol,assemble_quadcache(β))
+    SchwarzChristoffelDerivate(x,β,tol,assemble_quadcache(β))
 end
 
 hasfiniteintegral(f::SchwarzChristoffelDerivate) = sum(f.β) > 1
@@ -148,14 +147,15 @@ Evluate the function `prod((xv.-x).^.-β)`.
 
 Indices listed in skip are omitted from the product.
 """
-(f::SchwarzChristoffelDerivate)(xv; skip=()) = f.w(xv)*schwarzchristoffelderivative(f.x,f.β,xv; skip=skip)
+(f::SchwarzChristoffelDerivate)(xv; skip=()) = schwarzchristoffelderivative(f.x,f.β,xv; skip=skip)
 
 """
     segment(f::SchwarzChristoffelDerivate, k)
 
 Integral of `f` from `x[k]` to `x[k+1]`.
 """
-function segment(f::SchwarzChristoffelDerivate,k)
+segment(f::SchwarzChristoffelDerivate,k) = segment(f,one,k)
+function segment(f::SchwarzChristoffelDerivate,w,k)
     @unpack x = f
 
     if k in 1:length(x)-1
@@ -167,7 +167,7 @@ function segment(f::SchwarzChristoffelDerivate,k)
     else
         throw(ArgumentError("attempt to compute segment $k of $(length(x)+1)-segment SchwarzChristoffelDerivate"))
     end
-    return integral(f,k,xm) - integral(f,k+1,xm)
+    return integral(f,w,k,xm) - integral(f,w,k+1,xm)
 end
 
 """
@@ -175,20 +175,21 @@ end
 
 Integral of `f` from `x[k]` to `xv`.
 """
-function integral(f::SchwarzChristoffelDerivate,k,xv)
+integral(f::SchwarzChristoffelDerivate,k,xv) = integral(f,one,k,xv)
+function integral(f::SchwarzChristoffelDerivate,w,k,xv)
     @unpack x,β,tol,quadcache = f
     @assert k in 0:length(x)+1
     qleg = quadcache.legendre_quadrule
 
     if k in 1:length(x)
         qjac = quadcache.jacobi_quadrules[k]
-        return adaptive_semijacobi_integral(xx->f(xx,skip=(k,)),x[k],β[k],xv-x[k],tol,(qjac,qleg))
+        return adaptive_semijacobi_integral(xx->w(xx)*f(xx,skip=(k,)),x[k],β[k],xv-x[k],tol,(qjac,qleg))
     else
         @assert isreal(xv)
         qinf = quadcache.inf_quadrule
         m = InfSegmentMap(xv,x[1],x[end])
         return adaptive_semijacobi_integral(
-            y->f(m(y))*grad(m,y),
+            y->w(m(y))*f(m(y))*grad(m)(y),
             0, 2-sum(β), 1,
             tol,(qinf,qleg)
         )
@@ -199,33 +200,34 @@ end
 ########################
 # SchwarzChristoffelMap
 
-struct SchwarzChristoffelMap{F<:SchwarzChristoffelDerivate,Z,Zinf}
+struct SchwarzChristoffelMap{F<:SchwarzChristoffelDerivate,W,Z,Zinf}
     f::F
+    w::W
     z::Z
     zinf::Zinf
 end
 
-function SchwarzChristoffelMap(f::SchwarzChristoffelDerivate)
+function SchwarzChristoffelMap(f::SchwarzChristoffelDerivate, w = one)
     @unpack x = f
     z = similar(x,ComplexF64,)
     z[end] = 0
     for k = length(x)-1:-1:1
-        z[k] = z[k+1] - segment(f,k)
+        z[k] = z[k+1] - segment(f,w,k)
     end
-    zinf = hasfiniteintegral(f) ? segment(f,length(x)) : Inf
-    return SchwarzChristoffelMap(f,z,zinf)
+    zinf = hasfiniteintegral(f) ? segment(f,w,length(x)) : Inf
+    return SchwarzChristoffelMap(f,w,z,zinf)
 end
 
-SchwarzChristoffelMap(args...; kwargs...) = SchwarzChristoffelMap(SchwarzChristoffelDerivate(args...; kwargs...))
+SchwarzChristoffelMap(x,β, args...; kwargs...) = SchwarzChristoffelMap(SchwarzChristoffelDerivate(x,β; kwargs...),args...)
 
 segment(F::SchwarzChristoffelMap,args...) = segment(F.f,args...)
 nsegments(f::SchwarzChristoffelMap) = nsegments(F.f)
-grad(F::SchwarzChristoffelMap,x) = F.f(x)
+grad(F::SchwarzChristoffelMap) = x->F.w(x)*F.f(x)
 
 (F::SchwarzChristoffelMap)(xv::Real) = F(complex(xv))
 function (F::SchwarzChristoffelMap)(xv::Complex)
     # signbit(imag(xv)) && conj(F(conj(xv)))
-    @unpack f,z,zinf = F
+    @unpack f,w,z,zinf = F
     @unpack x = f
 
     abs(xv) == Inf && return zinf
@@ -243,7 +245,7 @@ function (F::SchwarzChristoffelMap)(xv::Complex)
             Bernstein.radius(ϕ(x[k+1]))
         )
     end
-    return z[k] + integral(f,k,xv)
+    return z[k] + integral(f,w,k,xv)
 end
 
 
@@ -292,23 +294,21 @@ function (iF::InverseSchwarzChristoffelMap)(ze)
 end
 
 function finv_ode(F::SchwarzChristoffelMap,xs,zs,ze)
-    @unpack f = F
     prob = ODEProblem(
-        (x,_,z)->(ze-zs)/f(x),
+        (x,_,z)->(ze-zs)/grad(F)(x),
         ComplexF64(xs), (0.0,1.0)
     )
     sol = solve(prob, reltol=1e-3, save_everystep=false)
     return sol(1)
 end
 
-function finv_newton(F::SchwarzChristoffelMap,xs,ze)
-    @unpack f = F
-    fd = (x->F(x) - ze), f
+function finv_newton(F::SchwarzChristoffelMap,x̃e,ze)
+    fd = (x->F(x) - ze), (x->grad(F)(x))
     return find_zero(
         fd,
-        complex(xs),
+        complex(x̃e),
         Roots.Newton(),
-        rtol=f.tol
+        rtol=F.f.tol
     )
 end
 
