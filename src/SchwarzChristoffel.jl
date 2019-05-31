@@ -3,7 +3,7 @@ module SchwarzChristoffel
 export SchwarzChristoffelDerivate, SchwarzChristoffelMap, segment, integral, finv
 
 using Bernstein
-using DifferentialEquations
+using OrdinaryDiffEq
 using FastGaussQuadrature
 using FixedPointNumbers
 using Parameters: @unpack
@@ -187,6 +187,7 @@ function integral(f::SchwarzChristoffelDerivate,w,k,xv)
     else
         @assert isreal(xv)
         qinf = quadcache.inf_quadrule
+        @assert !isnothing(qinf)
         m = InfSegmentMap(xv,x[1],x[end])
         return adaptive_semijacobi_integral(
             y->w(m(y))*f(m(y))*grad(m)(y),
@@ -220,13 +221,22 @@ end
 
 SchwarzChristoffelMap(x,β, args...; kwargs...) = SchwarzChristoffelMap(SchwarzChristoffelDerivate(x,β; kwargs...),args...)
 
-segment(F::SchwarzChristoffelMap,args...) = segment(F.f,args...)
-nsegments(f::SchwarzChristoffelMap) = nsegments(F.f)
+function segment(F::SchwarzChristoffelMap,k)
+    if k in 1:nsegments(F)-2
+        return F.z[k+1]-F.z[k]
+    elseif k == 0
+        return F.z[1] - F.zinf
+    elseif k == nsegments(F)-1
+        return F.zinf - F.z[end]
+    else
+        throw(ArgumentError("attempt to compute segment $k of $(length(x)+1)-segment SchwarzChristoffelMap"))
+    end
+end
+nsegments(F::SchwarzChristoffelMap) = nsegments(F.f)
 grad(F::SchwarzChristoffelMap) = x->F.w(x)*F.f(x)
 
 (F::SchwarzChristoffelMap)(xv::Real) = F(complex(xv))
 function (F::SchwarzChristoffelMap)(xv::Complex)
-    # signbit(imag(xv)) && conj(F(conj(xv)))
     @unpack f,w,z,zinf = F
     @unpack x = f
 
@@ -295,10 +305,18 @@ end
 
 function finv_ode(F::SchwarzChristoffelMap,xs,zs,ze)
     prob = ODEProblem(
-        (x,_,z)->(ze-zs)/grad(F)(x),
+        (x,_,z)->begin
+            dx = (ze-zs)/grad(F)(x)
+            # Make sure rounding errors do not push us into the lower half plane
+            return imag(x) == 0 ? complex(real(dx),max(0,imag(dx))) : dx
+        end,
         ComplexF64(xs), (0.0,1.0)
     )
-    sol = solve(prob, reltol=1e-3, save_everystep=false)
+    sol = solve(
+        prob, Tsit5(),
+        reltol = 1e-3,
+        save_everystep = false
+    )
     return sol(1)
 end
 
